@@ -272,13 +272,13 @@ async function renderMermaid (browser, definition, outputFormat, { viewport, bac
         const assetContent = fs.readFileSync(path.join(distDir, 'assets', jsAsset), 'utf-8')
         await page.addScriptTag({ content: assetContent })
       }
-      // Inject mermaid and zenuml scripts as inline content
+      // Wait for the bundle to set globalThis.elkLayouts before loading mermaid
+      await page.waitForFunction('typeof globalThis.elkLayouts !== "undefined"', { timeout: 10000 })
+      // Inject mermaid and zenuml scripts sequentially to ensure correct init order
       const mermaidScript = fs.readFileSync(mermaidIIFEPath, 'utf-8')
+      await page.addScriptTag({ content: mermaidScript })
       const zenumlScript = fs.readFileSync(zenumlIIFEPath, 'utf-8')
-      await Promise.all([
-        page.addScriptTag({ content: mermaidScript }),
-        page.addScriptTag({ content: zenumlScript })
-      ])
+      await page.addScriptTag({ content: zenumlScript })
     } else {
       // Local browser can access files directly via file:// URLs
       const mermaidHTMLPath = path.join(__dirname, '..', 'dist', 'index.html')
