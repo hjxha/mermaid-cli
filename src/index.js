@@ -265,6 +265,17 @@ async function renderMermaid (browser, definition, outputFormat, { viewport, bac
       const distDir = path.join(__dirname, '..', 'dist')
       // Set bare HTML body without any scripts
       await page.setContent('<!doctype html><html><body><div id="container"></div></body></html>', { waitUntil: 'load' })
+      // Patch URL constructor: Vite asset URLs use document.currentScript.src as base,
+      // which is empty for inline scripts. Provide a fallback to prevent crashes.
+      await page.evaluate(`(() => {
+        const OrigURL = URL;
+        globalThis.URL = function (...args) {
+          try { return new OrigURL(...args); } catch { return new OrigURL('https://localhost/' + args[0]); }
+        };
+        globalThis.URL.prototype = OrigURL.prototype;
+        globalThis.URL.createObjectURL = OrigURL.createObjectURL.bind(OrigURL);
+        globalThis.URL.revokeObjectURL = OrigURL.revokeObjectURL.bind(OrigURL);
+      })()`)
       // Load the bundled JS asset (fonts, CSS, ELK layout) via addScriptTag
       const assetFiles = fs.readdirSync(path.join(distDir, 'assets'))
       const jsAsset = assetFiles.find(f => f.endsWith('.js'))
@@ -425,7 +436,7 @@ async function renderMermaid (browser, definition, outputFormat, { viewport, bac
       }
     }
   } finally {
-    await page.close()
+    try { await page.close() } catch { /* browserless may reject page.close() */ }
   }
 }
 
