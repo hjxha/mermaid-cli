@@ -254,15 +254,45 @@ async function renderMermaid (browser, definition, outputFormat, { viewport, bac
     if (viewport) {
       await page.setViewport(viewport)
     }
-    const mermaidHTMLPath = path.join(__dirname, '..', 'dist', 'index.html')
-    await page.goto(url.pathToFileURL(mermaidHTMLPath).href)
+    // Detect remote browser: connected browsers have no local process.
+    // Use 'in' check to avoid TypeScript errors with BrowserContext type.
+    const isRemoteBrowser = !('process' in browser && /** @type {import("puppeteer-core").Browser} */ (browser).process?.())
+    if (isRemoteBrowser) {
+      // Remote browser can't access local files via file:// URLs.
+      // Read all files locally and inject their content directly.
+      const distDir = path.join(__dirname, '..', 'dist')
+      const htmlContent = fs.readFileSync(path.join(distDir, 'index.html'), 'utf-8')
+      // The HTML references a bundled JS asset (fonts, CSS, ELK layout).
+      // Extract the asset filename and inline it.
+      const assetMatch = htmlContent.match(/src="\.\/assets\/([^"]+)"/)
+      let fullHTML = htmlContent
+      if (assetMatch) {
+        const assetContent = fs.readFileSync(path.join(distDir, 'assets', assetMatch[1]), 'utf-8')
+        fullHTML = htmlContent.replace(
+          `<script charset="utf-8" src="./assets/${assetMatch[1]}"></script>`,
+          `<script charset="utf-8">${assetContent}</script>`
+        )
+      }
+      await page.setContent(fullHTML, { waitUntil: 'load' })
+      // Inject mermaid and zenuml scripts as inline content
+      const mermaidScript = fs.readFileSync(mermaidIIFEPath, 'utf-8')
+      const zenumlScript = fs.readFileSync(zenumlIIFEPath, 'utf-8')
+      await Promise.all([
+        page.addScriptTag({ content: mermaidScript }),
+        page.addScriptTag({ content: zenumlScript })
+      ])
+    } else {
+      // Local browser can access files directly via file:// URLs
+      const mermaidHTMLPath = path.join(__dirname, '..', 'dist', 'index.html')
+      await page.goto(url.pathToFileURL(mermaidHTMLPath).href)
+      await Promise.all([
+        page.addScriptTag({ path: mermaidIIFEPath }),
+        page.addScriptTag({ path: zenumlIIFEPath })
+      ])
+    }
     await page.$eval('body', (body, backgroundColor) => {
       body.style.background = backgroundColor
     }, backgroundColor)
-    await Promise.all([
-      page.addScriptTag({ path: mermaidIIFEPath }),
-      page.addScriptTag({ path: zenumlIIFEPath })
-    ])
     const metadata = await page.$eval('#container', async (container, definition, mermaidConfig, myCSS, backgroundColor, svgId, iconPacks, iconPacksNamesAndUrls) => {
       await Promise.all(Array.from(document.fonts, (font) => font.load()))
 

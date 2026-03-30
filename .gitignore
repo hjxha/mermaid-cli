@@ -17,3 +17,4 @@ static-out/
 fontawesome/
 *.min.js
 *.bundle.js
+*.tgz
