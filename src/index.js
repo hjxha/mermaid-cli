@@ -3,7 +3,7 @@ import chalk from 'chalk'
 import fs from 'fs'
 import { resolve } from 'import-meta-resolve'
 import path from 'path'
-import puppeteer from 'puppeteer'
+import puppeteer from 'puppeteer-core'
 import url from 'url'
 import { version } from './version.js'
 
@@ -189,7 +189,7 @@ async function cli () {
     mermaidConfig = Object.assign(mermaidConfig, JSON.parse(fs.readFileSync(configFile, 'utf-8')))
   }
 
-  let puppeteerConfig = /** @type {import('puppeteer').PuppeteerLaunchOptions} */ ({
+  let puppeteerConfig = /** @type {import('puppeteer-core').LaunchOptions & import('puppeteer-core').ConnectOptions} */ ({
     /*
      * `headless: 'shell'` is not officially supported in Puppeteer v19, v20, v21,
      * but still works. In Puppeteer v22, it uses the `chrome-headless-shell` package,
@@ -226,7 +226,7 @@ async function cli () {
 
 /**
  * @typedef {Object} ParseMDDOptions Options to pass to {@link parseMMD}
- * @property {import("puppeteer").Viewport} [viewport] - Puppeteer viewport (e.g. `width`, `height`, `deviceScaleFactor`)
+ * @property {import("puppeteer-core").Viewport} [viewport] - Puppeteer viewport (e.g. `width`, `height`, `deviceScaleFactor`)
  * @property {string | "transparent"} [backgroundColor] - Background color.
  * @property {Parameters<import("mermaid")["default"]["initialize"]>[0]} [mermaidConfig] - Mermaid config.
  * @property {CSSStyleDeclaration["cssText"]} [myCSS] - Optional CSS text.
@@ -238,7 +238,7 @@ async function cli () {
 /**
  * Render a mermaid diagram.
  *
- * @param {import("puppeteer").Browser | import("puppeteer").BrowserContext} browser - Puppeteer Browser
+ * @param {import("puppeteer-core").Browser | import("puppeteer-core").BrowserContext} browser - Puppeteer Browser
  * @param {string} definition - Mermaid diagram definition
  * @param {"svg" | "png" | "pdf"} outputFormat - Mermaid output format.
  * @param {ParseMDDOptions} [opt] - Options, see {@link ParseMDDOptions} for details.
@@ -435,7 +435,7 @@ function markdownImage ({ url, title, alt }) {
  * If this is `undefined`, loads the mermaid definition from stdin.
  * @param {`${string}.${"md" | "markdown" | "svg" | "png" | "pdf"}` | "/dev/stdout"} output - Path to the output file.
  * @param {Object} [opts] - Options
- * @param {import("puppeteer").LaunchOptions} [opts.puppeteerConfig] - Puppeteer launch options.
+ * @param {import("puppeteer-core").LaunchOptions & import("puppeteer-core").ConnectOptions} [opts.puppeteerConfig] - Puppeteer launch/connect options.
  * @param {boolean} [opts.quiet] - If set, suppress log output.
  * @param {"svg" | "png" | "pdf"} [opts.outputFormat] - Mermaid output format.
  * @param {string} [opts.artefacts] - Path to the artefacts directory.
@@ -458,10 +458,11 @@ async function run (input, output, { puppeteerConfig = {}, quiet = false, output
   const mermaidChartsInMarkdown = /^[^\S\n]*[`:]{3}(?:mermaid)([^\S\n]*\r?\n([\s\S]*?))[`:]{3}[^\S\n]*$/
   const mermaidChartsInMarkdownRegexGlobal = new RegExp(mermaidChartsInMarkdown, 'gm')
   /**
-   * @type {puppeteer.Browser | undefined}
+   * @type {import("puppeteer-core").Browser | undefined}
    * Lazy-loaded browser instance, only created when needed.
    */
   let browser
+  const isRemote = Boolean(puppeteerConfig.browserWSEndpoint)
   try {
     if (!outputFormat) {
       const outputFormatFromFilename =
@@ -488,7 +489,9 @@ async function run (input, output, { puppeteerConfig = {}, quiet = false, output
       const imagePromises = []
       for (const mermaidCodeblockMatch of definition.matchAll(mermaidChartsInMarkdownRegexGlobal)) {
         if (browser === undefined) {
-          browser = await puppeteer.launch(puppeteerConfig)
+          browser = isRemote
+            ? await puppeteer.connect(puppeteerConfig)
+            : await puppeteer.launch(puppeteerConfig)
         }
         const mermaidDefinition = mermaidCodeblockMatch[2]
 
@@ -548,14 +551,20 @@ async function run (input, output, { puppeteerConfig = {}, quiet = false, output
       }
     } else {
       info('Generating single mermaid chart')
-      browser = await puppeteer.launch(puppeteerConfig)
+      browser = isRemote
+        ? await puppeteer.connect(puppeteerConfig)
+        : await puppeteer.launch(puppeteerConfig)
       const { data } = await renderMermaid(browser, definition, outputFormat, parseMMDOptions)
       await output !== '/dev/stdout'
         ? fs.promises.writeFile(output, data)
         : process.stdout.write(data)
     }
   } finally {
-    await browser?.close?.()
+    if (isRemote) {
+      await browser?.disconnect?.()
+    } else {
+      await browser?.close?.()
+    }
   }
 }
 
