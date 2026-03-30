@@ -58,7 +58,7 @@ const checkConfigFile = file => {
  * If `undefined`, reads from `stdin` instead.
  * @returns {Promise<string>} The contents of `inputFile` parsed as `utf8`.
  */
-async function getInputData (inputFile) {
+async function getInputData(inputFile) {
   // if an input file has been specified using '-i', it takes precedence over
   // piping from stdin
   if (typeof inputFile !== 'undefined') {
@@ -94,7 +94,7 @@ async function getInputData (inputFile) {
  * @throws {InvalidArgumentError} If the arg is not valid.
  * @see https://github.com/tj/commander.js/wiki/Class:-Option#argparserfn
  */
-function parseCommanderInt (value, _unused) {
+function parseCommanderInt(value, _unused) {
   const parsedValue = parseInt(value, 10)
   if (isNaN(parsedValue) || parsedValue < 1) {
     throw new InvalidArgumentError('Not a positive integer.')
@@ -102,7 +102,7 @@ function parseCommanderInt (value, _unused) {
   return parsedValue
 }
 
-async function cli () {
+async function cli() {
   const commander = new Command()
   commander
     .version(version)
@@ -144,9 +144,9 @@ async function cli () {
 
   // check output file
   if (!output) {
-  // if an input file is defined, it should take precedence, otherwise, input is
-  // coming from stdin and just name the file out.svg, if it hasn't been
-  // specified with the '-o' option
+    // if an input file is defined, it should take precedence, otherwise, input is
+    // coming from stdin and just name the file out.svg, if it hasn't been
+    // specified with the '-o' option
     if (outputFormat) {
       output = input ? (`${input}.${outputFormat}`) : `out.${outputFormat}`
     } else {
@@ -213,14 +213,14 @@ async function cli () {
 
   await run(
     input, output, {
-      puppeteerConfig,
-      quiet,
-      outputFormat,
-      parseMMDOptions: {
-        mermaidConfig, backgroundColor, myCSS, pdfFit, viewport: { width, height, deviceScaleFactor: scale }, svgId, iconPacks, iconPacksNamesAndUrls
-      },
-      artefacts
-    }
+    puppeteerConfig,
+    quiet,
+    outputFormat,
+    parseMMDOptions: {
+      mermaidConfig, backgroundColor, myCSS, pdfFit, viewport: { width, height, deviceScaleFactor: scale }, svgId, iconPacks, iconPacksNamesAndUrls
+    },
+    artefacts
+  }
   )
 }
 
@@ -245,7 +245,7 @@ async function cli () {
  * @param {import("puppeteer-core").Page} page - Puppeteer page instance
  * @param {import("puppeteer-core").Browser | import("puppeteer-core").BrowserContext} browser - Browser instance
  */
-async function preparePage (page, browser) {
+async function preparePage(page, browser) {
   const isRemote = !('process' in browser && /** @type {import("puppeteer-core").Browser} */ (browser).process?.())
 
   if (!isRemote) {
@@ -263,7 +263,34 @@ async function preparePage (page, browser) {
   // 1. Set bare HTML (setContent does NOT execute inline <script> tags)
   await page.setContent('<!doctype html><html><body><div id="container"></div></body></html>', { waitUntil: 'load' })
 
-  // 2. Patch URL constructor — Vite uses new URL(asset, document.currentScript.src)
+  // 2. Intercept asset requests — the URL constructor fallback (step 3) creates
+  //    URLs like https://localhost/fa-brands-400-BdzBFuGj.woff2. Intercept these
+  //    and serve the actual files from the local dist/assets/ directory.
+  const distDir = path.join(__dirname, '..', 'dist')
+  const assetsPath = path.join(distDir, 'assets')
+  await page.setRequestInterception(true)
+  page.on('request', (req) => {
+    const reqUrl = req.url()
+    if (reqUrl.startsWith('https://localhost/')) {
+      const filename = reqUrl.replace('https://localhost/', '')
+      const filePath = path.join(assetsPath, filename)
+      if (fs.existsSync(filePath)) {
+        const content = fs.readFileSync(filePath)
+        const ext = path.extname(filename)
+        const mimeTypes = /** @type {Record<string, string>} */ ({
+          '.woff2': 'font/woff2', '.woff': 'font/woff',
+          '.ttf': 'font/ttf', '.css': 'text/css', '.js': 'application/javascript'
+        })
+        req.respond({ status: 200, contentType: mimeTypes[ext] || 'application/octet-stream', body: content })
+      } else {
+        req.abort('blockedbyclient')
+      }
+    } else {
+      req.continue()
+    }
+  })
+
+  // 3. Patch URL constructor — Vite uses new URL(asset, document.currentScript.src)
   //    which crashes for inline scripts where currentScript.src is empty
   await page.evaluate(`(() => {
     const OrigURL = URL;
@@ -275,19 +302,18 @@ async function preparePage (page, browser) {
     globalThis.URL.revokeObjectURL = OrigURL.revokeObjectURL.bind(OrigURL);
   })()`)
 
-  // 3. Load the Vite-bundled asset (fonts, CSS, ELK layout)
-  const distDir = path.join(__dirname, '..', 'dist')
-  const assetFiles = fs.readdirSync(path.join(distDir, 'assets'))
+  // 4. Load the Vite-bundled asset (fonts, CSS, ELK layout)
+  const assetFiles = fs.readdirSync(assetsPath)
   const jsAsset = assetFiles.find(f => f.endsWith('.js'))
   if (jsAsset) {
-    const assetContent = fs.readFileSync(path.join(distDir, 'assets', jsAsset), 'utf-8')
+    const assetContent = fs.readFileSync(path.join(assetsPath, jsAsset), 'utf-8')
     await page.addScriptTag({ content: assetContent })
   }
 
-  // 4. Wait for the bundle to finish setting globalThis.elkLayouts
+  // 5. Wait for the bundle to finish setting globalThis.elkLayouts
   await page.waitForFunction('typeof globalThis.elkLayouts !== "undefined"', { timeout: 10000 })
 
-  // 5. Load mermaid and zenuml (sequentially — order matters)
+  // 6. Load mermaid and zenuml (sequentially — order matters)
   await page.addScriptTag({ content: fs.readFileSync(mermaidIIFEPath, 'utf-8') })
   await page.addScriptTag({ content: fs.readFileSync(zenumlIIFEPath, 'utf-8') })
 }
@@ -302,7 +328,7 @@ async function preparePage (page, browser) {
  * @returns {Promise<{title: string | null, desc: string | null, data: Uint8Array}>} The output file in bytes,
  * with optional metadata.
  */
-async function renderMermaid (browser, definition, outputFormat, { viewport, backgroundColor = 'white', mermaidConfig = {}, myCSS, pdfFit, svgId, iconPacks = [], iconPacksNamesAndUrls = [] } = {}) {
+async function renderMermaid(browser, definition, outputFormat, { viewport, backgroundColor = 'white', mermaidConfig = {}, myCSS, pdfFit, svgId, iconPacks = [], iconPacksNamesAndUrls = [] } = {}) {
   const page = await browser.newPage()
   page.on('console', (msg) => {
     console.warn(msg.text())
@@ -316,7 +342,7 @@ async function renderMermaid (browser, definition, outputFormat, { viewport, bac
       body.style.background = backgroundColor
     }, backgroundColor)
     const metadata = await page.$eval('#container', async (container, definition, mermaidConfig, myCSS, backgroundColor, svgId, iconPacks, iconPacksNamesAndUrls) => {
-      await Promise.all(Array.from(document.fonts, (font) => font.load()))
+      await Promise.all(Array.from(document.fonts, (font) => font.load().catch(() => { })))
 
       /**
        * @typedef {Object} GlobalThisWithMermaid
@@ -343,22 +369,21 @@ async function renderMermaid (browser, definition, outputFormat, { viewport, bac
       )
 
       mermaid.registerIconPacks(
-        iconPacksNamesAndUrls.map((iconPackInfo) => 
-          {
-            var packName = iconPackInfo.split('#')[0];
-            var packUrl = iconPackInfo.split('#')[1];
+        iconPacksNamesAndUrls.map((iconPackInfo) => {
+          var packName = iconPackInfo.split('#')[0];
+          var packUrl = iconPackInfo.split('#')[1];
 
-            return ({
-              name: packName,
-              loader: () =>
-                fetch(packUrl)
-                  .then((res) => res.json())
-                  .catch(() => {
-                    error(`Failed to fetch icon: ${iconPackInfo}`);
-                  })
-              }
-            )
+          return ({
+            name: packName,
+            loader: () =>
+              fetch(packUrl)
+                .then((res) => res.json())
+                .catch(() => {
+                  error(`Failed to fetch icon: ${iconPackInfo}`);
+                })
           }
+          )
+        }
         )
       )
       mermaid.initialize({ startOnLoad: false, ...mermaidConfig })
@@ -467,7 +492,7 @@ async function renderMermaid (browser, definition, outputFormat, { viewport, bac
  * @param {MarkdownImageProps} params - Parameters.
  * @returns {`![${string}](${string})`} The markdown image text.
  */
-function markdownImage ({ url, title, alt }) {
+function markdownImage({ url, title, alt }) {
   // we can't use String.prototype.replaceAll since it's not supported in Node v14
   const altEscaped = alt.replace(/[[\]\\]/g, '\\$&')
   if (title) {
@@ -494,7 +519,7 @@ function markdownImage ({ url, title, alt }) {
  * Defaults to `output` extension. Overrides `output` extension if set.
  * @param {ParseMDDOptions} [opts.parseMMDOptions] - Options to pass to {@link parseMMDOptions}.
  */
-async function run (input, output, { puppeteerConfig = {}, quiet = false, outputFormat, parseMMDOptions, artefacts } = {}) {
+async function run(input, output, { puppeteerConfig = {}, quiet = false, outputFormat, parseMMDOptions, artefacts } = {}) {
   /**
    * Logs the given message to stdout, unless `quiet` is set to `true`.
    *
