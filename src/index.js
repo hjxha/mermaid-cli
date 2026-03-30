@@ -260,20 +260,18 @@ async function renderMermaid (browser, definition, outputFormat, { viewport, bac
     if (isRemoteBrowser) {
       // Remote browser can't access local files via file:// URLs.
       // Read all files locally and inject their content directly.
+      // NOTE: page.setContent() does NOT execute inline <script> tags for security.
+      // We must use page.addScriptTag({ content }) which creates DOM script elements that DO execute.
       const distDir = path.join(__dirname, '..', 'dist')
-      const htmlContent = fs.readFileSync(path.join(distDir, 'index.html'), 'utf-8')
-      // The HTML references a bundled JS asset (fonts, CSS, ELK layout).
-      // Extract the asset filename and inline it.
-      const assetMatch = htmlContent.match(/src="\.\/assets\/([^"]+)"/)
-      let fullHTML = htmlContent
-      if (assetMatch) {
-        const assetContent = fs.readFileSync(path.join(distDir, 'assets', assetMatch[1]), 'utf-8')
-        fullHTML = htmlContent.replace(
-          `<script charset="utf-8" src="./assets/${assetMatch[1]}"></script>`,
-          `<script charset="utf-8">${assetContent}</script>`
-        )
+      // Set bare HTML body without any scripts
+      await page.setContent('<!doctype html><html><body><div id="container"></div></body></html>', { waitUntil: 'load' })
+      // Load the bundled JS asset (fonts, CSS, ELK layout) via addScriptTag
+      const assetFiles = fs.readdirSync(path.join(distDir, 'assets'))
+      const jsAsset = assetFiles.find(f => f.endsWith('.js'))
+      if (jsAsset) {
+        const assetContent = fs.readFileSync(path.join(distDir, 'assets', jsAsset), 'utf-8')
+        await page.addScriptTag({ content: assetContent })
       }
-      await page.setContent(fullHTML, { waitUntil: 'load' })
       // Inject mermaid and zenuml scripts as inline content
       const mermaidScript = fs.readFileSync(mermaidIIFEPath, 'utf-8')
       const zenumlScript = fs.readFileSync(zenumlIIFEPath, 'utf-8')
