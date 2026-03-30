@@ -236,6 +236,63 @@ async function cli () {
  * @property {string[]} [iconPacksNamesAndUrls] - IconPack Json file name and url to use.
 
 /**
+ * Prepare a browser page by loading the mermaid HTML and scripts.
+ *
+ * For local browsers, loads files via file:// URLs.
+ * For remote browsers (e.g. browserless), injects all content directly since
+ * the remote browser has no access to the local filesystem.
+ *
+ * @param {import("puppeteer-core").Page} page - Puppeteer page instance
+ * @param {import("puppeteer-core").Browser | import("puppeteer-core").BrowserContext} browser - Browser instance
+ */
+async function preparePage (page, browser) {
+  const isRemote = !('process' in browser && /** @type {import("puppeteer-core").Browser} */ (browser).process?.())
+
+  if (!isRemote) {
+    const mermaidHTMLPath = path.join(__dirname, '..', 'dist', 'index.html')
+    await page.goto(url.pathToFileURL(mermaidHTMLPath).href)
+    await Promise.all([
+      page.addScriptTag({ path: mermaidIIFEPath }),
+      page.addScriptTag({ path: zenumlIIFEPath })
+    ])
+    return
+  }
+
+  // --- Remote browser: inject everything as content ---
+
+  // 1. Set bare HTML (setContent does NOT execute inline <script> tags)
+  await page.setContent('<!doctype html><html><body><div id="container"></div></body></html>', { waitUntil: 'load' })
+
+  // 2. Patch URL constructor — Vite uses new URL(asset, document.currentScript.src)
+  //    which crashes for inline scripts where currentScript.src is empty
+  await page.evaluate(`(() => {
+    const OrigURL = URL;
+    globalThis.URL = function (...args) {
+      try { return new OrigURL(...args); } catch { return new OrigURL('https://localhost/' + args[0]); }
+    };
+    globalThis.URL.prototype = OrigURL.prototype;
+    globalThis.URL.createObjectURL = OrigURL.createObjectURL.bind(OrigURL);
+    globalThis.URL.revokeObjectURL = OrigURL.revokeObjectURL.bind(OrigURL);
+  })()`)
+
+  // 3. Load the Vite-bundled asset (fonts, CSS, ELK layout)
+  const distDir = path.join(__dirname, '..', 'dist')
+  const assetFiles = fs.readdirSync(path.join(distDir, 'assets'))
+  const jsAsset = assetFiles.find(f => f.endsWith('.js'))
+  if (jsAsset) {
+    const assetContent = fs.readFileSync(path.join(distDir, 'assets', jsAsset), 'utf-8')
+    await page.addScriptTag({ content: assetContent })
+  }
+
+  // 4. Wait for the bundle to finish setting globalThis.elkLayouts
+  await page.waitForFunction('typeof globalThis.elkLayouts !== "undefined"', { timeout: 10000 })
+
+  // 5. Load mermaid and zenuml (sequentially — order matters)
+  await page.addScriptTag({ content: fs.readFileSync(mermaidIIFEPath, 'utf-8') })
+  await page.addScriptTag({ content: fs.readFileSync(zenumlIIFEPath, 'utf-8') })
+}
+
+/**
  * Render a mermaid diagram.
  *
  * @param {import("puppeteer-core").Browser | import("puppeteer-core").BrowserContext} browser - Puppeteer Browser
@@ -254,51 +311,7 @@ async function renderMermaid (browser, definition, outputFormat, { viewport, bac
     if (viewport) {
       await page.setViewport(viewport)
     }
-    // Detect remote browser: connected browsers have no local process.
-    // Use 'in' check to avoid TypeScript errors with BrowserContext type.
-    const isRemoteBrowser = !('process' in browser && /** @type {import("puppeteer-core").Browser} */ (browser).process?.())
-    if (isRemoteBrowser) {
-      // Remote browser can't access local files via file:// URLs.
-      // Read all files locally and inject their content directly.
-      // NOTE: page.setContent() does NOT execute inline <script> tags for security.
-      // We must use page.addScriptTag({ content }) which creates DOM script elements that DO execute.
-      const distDir = path.join(__dirname, '..', 'dist')
-      // Set bare HTML body without any scripts
-      await page.setContent('<!doctype html><html><body><div id="container"></div></body></html>', { waitUntil: 'load' })
-      // Patch URL constructor: Vite asset URLs use document.currentScript.src as base,
-      // which is empty for inline scripts. Provide a fallback to prevent crashes.
-      await page.evaluate(`(() => {
-        const OrigURL = URL;
-        globalThis.URL = function (...args) {
-          try { return new OrigURL(...args); } catch { return new OrigURL('https://localhost/' + args[0]); }
-        };
-        globalThis.URL.prototype = OrigURL.prototype;
-        globalThis.URL.createObjectURL = OrigURL.createObjectURL.bind(OrigURL);
-        globalThis.URL.revokeObjectURL = OrigURL.revokeObjectURL.bind(OrigURL);
-      })()`)
-      // Load the bundled JS asset (fonts, CSS, ELK layout) via addScriptTag
-      const assetFiles = fs.readdirSync(path.join(distDir, 'assets'))
-      const jsAsset = assetFiles.find(f => f.endsWith('.js'))
-      if (jsAsset) {
-        const assetContent = fs.readFileSync(path.join(distDir, 'assets', jsAsset), 'utf-8')
-        await page.addScriptTag({ content: assetContent })
-      }
-      // Wait for the bundle to set globalThis.elkLayouts before loading mermaid
-      await page.waitForFunction('typeof globalThis.elkLayouts !== "undefined"', { timeout: 10000 })
-      // Inject mermaid and zenuml scripts sequentially to ensure correct init order
-      const mermaidScript = fs.readFileSync(mermaidIIFEPath, 'utf-8')
-      await page.addScriptTag({ content: mermaidScript })
-      const zenumlScript = fs.readFileSync(zenumlIIFEPath, 'utf-8')
-      await page.addScriptTag({ content: zenumlScript })
-    } else {
-      // Local browser can access files directly via file:// URLs
-      const mermaidHTMLPath = path.join(__dirname, '..', 'dist', 'index.html')
-      await page.goto(url.pathToFileURL(mermaidHTMLPath).href)
-      await Promise.all([
-        page.addScriptTag({ path: mermaidIIFEPath }),
-        page.addScriptTag({ path: zenumlIIFEPath })
-      ])
-    }
+    await preparePage(page, browser)
     await page.$eval('body', (body, backgroundColor) => {
       body.style.background = backgroundColor
     }, backgroundColor)
